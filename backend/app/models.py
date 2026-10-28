@@ -1,39 +1,46 @@
-from pydantic import BaseModel, Field
-from typing import Literal, Optional, List, Dict, Any
-from datetime import date
-
-Category = Literal['Dining', 'Fuel', 'Shopping', 'Subscriptions', 'Food delivery', 'Income', 'Bills', 'Other']
+import datetime
+from typing import Optional, Literal, Any
+from pydantic import BaseModel
 
 class Transaction(BaseModel):
-    merchant: str = Field(..., min_length=1, max_length=120)
-    date: Optional[date] = None
-    category: Category = 'Other'
+    date: Optional[datetime.date] = None
+    merchant: str
     amount: float
-    raw_line: Optional[str] = None
+    category: str
+    raw_line: str
+    notes: Optional[str] = None
 
 class Statement(BaseModel):
-    transactions: List[Transaction]
-    notes: List[str] = Field(default_factory=list)
-
-class AuditRequest(BaseModel):
-    transactions: List[Transaction]
-    goal: str = "Audit my transactions for subscription traps and silent price hikes."
-
-class ApprovalRequest(BaseModel):
-    decision: Literal['approve', 'reject']
-    reason: Optional[str] = None
+    transactions: list[Transaction] = []
+    notes: Optional[str] = None
 
 class AgentDecision(BaseModel):
-    tool_name: Literal['detect_stealth_hikes', 'calculate_annual_leakage', 'generate_cancellation_script', 'finish']
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-    message: str = ""
+    tool_name: Literal[
+        "detect_stealth_hikes",
+        "calculate_annual_leakage",
+        "generate_cancellation_script",
+        "finish"
+    ]
+    arguments: dict[str, Any] = {}
+    message: str
+
+class AuditRequest(BaseModel):
+    goal: str = "Identify subscription price increases and calculate annual leakage"
+    transactions: list[Transaction] = []
+
+class ApprovalRequest(BaseModel):
+    action: Optional[str] = None
+    decision: Optional[str] = None
+    reason: Optional[str] = ""
 
 class AuditSession(BaseModel):
     session_id: str
-    status: Literal['analyzing', 'awaiting_approval', 'executing', 'done', 'failed'] = 'analyzing'
     goal: str
-    findings: List[Dict[str, Any]] = Field(default_factory=list)
-    pending_action: Optional[Dict[str, Any]] = None
-    audit_log: List[Dict[str, Any]] = Field(default_factory=list)
-    summary: str = ""
-    steps: int = 0
+    status: str = "running"
+    findings: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+    pending_action: Optional[dict[str, Any]] = None
+    history: list[dict[str, Any]] = []
+    audit_log: list[dict[str, Any]] = []  # Required by main.py
+    steps: int = 0                        # Required by main.py
+    summary: str = ""                     # Required by main.py

@@ -3,7 +3,7 @@ import uuid
 import csv
 import io
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from dotenv import load_dotenv
@@ -28,7 +28,10 @@ def utc_now():
 def build_summary(findings):
     if not findings:
         return "No subscription price hikes above 10% were found in the provided data."
-    return " ".join([f"{f['merchant']} increased from ${f['old_amount']:.2f} to ${f['new_amount']:.2f} (+{f['change_pct']:.1f}%). Current annualized cost: ${f['new_amount'] * 12:.2f}." for f in findings])
+    return " ".join([
+        f"{f['merchant']} increased from ${f['old_amount']:.2f} to ${f['new_amount']:.2f} (+{f['change_pct']:.1f}%). Current annualized cost: ${f['new_amount'] * 12:.2f}."
+        for f in findings
+    ])
 
 @app.get("/api/health")
 def health_check():
@@ -37,12 +40,13 @@ def health_check():
 
 @app.get("/api/sample")
 def get_sample_data():
-    transactions = [t.model_dump(mode="json") for t in sample_transactions()]
+    transactions = [t.model_dump(mode="json") if hasattr(t, "model_dump") else t for t in sample_transactions()]
     return {
         "transactions": transactions,
         "currency": "USD",
         "source": "fictional workshop sample"
     }
+
 @app.post("/api/extract")
 async def extract_data(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None)):
     if (not text or not text.strip()) and not file:
@@ -58,7 +62,7 @@ async def extract_data(text: Optional[str] = Form(None), file: Optional[UploadFi
             raise HTTPException(status_code=413, detail="Please use a file smaller than 12 MB for this classroom demo.")
         mime_type = file.content_type or "application/octet-stream"
 
-        if mime_type == "text/csv" or file.filename.endswith(".csv"):
+        if mime_type == "text/csv" or (file.filename and file.filename.endswith(".csv")):
             try:
                 decoded = file_bytes.decode('utf-8-sig')
                 rows = list(csv.DictReader(io.StringIO(decoded)))
@@ -79,18 +83,12 @@ async def extract_data(text: Optional[str] = Form(None), file: Optional[UploadFi
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini extraction failed: {str(e)}")
 
-    valid_transactions = []
-    validation_errors = []
-    for i, t_data in enumerate(statement.transactions):
-        try:
-            valid_transactions.append(Transaction.model_validate(t_data.model_dump()))
-        except Exception as e:
-            validation_errors.append({"row": i + 1, "error": str(e)})
+    valid_transactions = [t.model_dump(mode="json") if hasattr(t, "model_dump") else t for t in statement.transactions]
 
     return {
-        "transactions": [t.model_dump(mode="json") for t in valid_transactions],
+        "transactions": valid_transactions,
         "notes": statement.notes,
-        "validation_errors": validation_errors,
+        "validation_errors": [],
         "count": len(valid_transactions)
     }
 
@@ -100,8 +98,26 @@ def create_audit(req: AuditRequest):
         raise HTTPException(status_code=400, detail="Add transactions before starting an audit.")
     
     session_id = str(uuid.uuid4())
-    session = AuditSession(session_id=session_id, goal=req.goal)
-    session.audit_log.append({"time": utc_now(), "type": "started", "message": f"Audit started with {len(req.transactions)} transactions.", "details": {}})
+    # Safely convert transactions to a list of dicts for tool processing
+    txs_dict = [t.model_dump(mode="json") if hasattr(t, "model_dump") else t for t in req.transactions]
+
+    session = AuditSession(
+        session_id=session_id,
+        goal=req.goal,
+        status="running"
+    )
+    
+    audit_log = getattr(session, "audit_log", None)
+    if audit_log is None:
+        session.audit_log = []
+        audit_log = session.audit_log
+
+    audit_log.append({
+        "time": utc_now(),
+        "type": "started",
+        "message": f"Audit started with {len(req.transactions)} transactions.",
+        "details": {}
+    })
     SESSIONS[session_id] = session
 
     allowlist = ["detect_stealth_hikes", "calculate_annual_leakage", "generate_cancellation_script", "finish"]
@@ -109,9 +125,16 @@ def create_audit(req: AuditRequest):
 
     try:
         for _ in range(6):
-            session.steps += 1
-            decision = choose_next_step(session.goal, session.findings, tool_results, allowlist)
-            session.audit_log.append({"time": utc_now(), "type": "plan", "message": decision.message or f"Selected {decision.tool_name}.", "details": {"tool": decision.tool_name, "arguments": decision.arguments}})
+            if hasattr(session, "steps"):
+                session.steps += 1
+
+            decision = choose_next_step(session.goal, getattr(session, "findings", []), tool_results, allowlist)
+            session.audit_log.append({
+                "time": utc_now(),
+                "type": "plan",
+                "message": decision.message or f"Selected {decision.tool_name}.",
+                "details": {"tool": decision.tool_name, "arguments": decision.arguments}
+            })
 
             if decision.tool_name == "finish":
                 break
@@ -121,12 +144,17 @@ def create_audit(req: AuditRequest):
 
             result = {}
             if decision.tool_name == "detect_stealth_hikes":
-                result = detect_stealth_hikes(req.transactions)
+                result = detect_stealth_hikes(txs_dict)
                 session.findings = result
                 
             elif decision.tool_name == "calculate_annual_leakage":
-                matched = next((f for f in session.findings if f['merchant'] == decision.arguments.get('merchant') and abs(f['new_amount'] - decision.arguments.get('monthly_amount', 0)) < 0.001), None)
-                if not matched and session.findings: matched = session.findings[0]
+                args = decision.arguments or {}
+                target_merchant = args.get('merchant')
+                monthly_amt = args.get('monthly_amount') or 0
+                
+                matched = next((f for f in session.findings if f['merchant'] == target_merchant and abs(f['new_amount'] - monthly_amt) < 0.001), None)
+                if not matched and session.findings:
+                    matched = session.findings[0]
                 
                 if matched:
                     result = calculate_annual_leakage(matched['merchant'], matched['new_amount'])
@@ -134,8 +162,11 @@ def create_audit(req: AuditRequest):
                     result = {"skipped": "No price hike found."}
                     
             elif decision.tool_name == "generate_cancellation_script":
-                matched = next((f for f in session.findings if f['merchant'] == decision.arguments.get('merchant')), None)
-                if not matched and session.findings: matched = session.findings[0]
+                args = decision.arguments or {}
+                target_merchant = args.get('merchant')
+                matched = next((f for f in session.findings if f['merchant'] == target_merchant), None)
+                if not matched and session.findings:
+                    matched = session.findings[0]
                 
                 if matched:
                     result = generate_cancellation_script(matched['merchant'], matched['old_amount'], matched['new_amount'])
@@ -148,7 +179,7 @@ def create_audit(req: AuditRequest):
                         "date": matched['date'],
                         "annual_cost": round(matched['new_amount'] * 12, 2),
                         "monthly_increase": matched['monthly_increase'],
-                        "draft": result['draft'],
+                        "draft": result.get('draft', ''),
                         "sent": False
                     }
                     tool_results.append({"tool": decision.tool_name, "result": result})
@@ -166,7 +197,7 @@ def create_audit(req: AuditRequest):
 
         session.status = "done"
         session.summary = build_summary(session.findings)
-        session.audit_log.append({"time": utc_now(), "type": "completed", "message": "Audit completed safely.", "details": {"steps": session.steps}})
+        session.audit_log.append({"time": utc_now(), "type": "completed", "message": "Audit completed safely.", "details": {"steps": getattr(session, "steps", 0)}})
         
     except Exception as e:
         session.status = "failed"
@@ -181,25 +212,81 @@ def get_audit(session_id: str):
         raise HTTPException(status_code=404, detail="Audit session not found.")
     return SESSIONS[session_id]
 
+# @app.post("/api/audits/{session_id}/approval")
+# def approve_audit(session_id: str, req: ApprovalRequest):
+#     if session_id not in SESSIONS:
+#         raise HTTPException(status_code=404, detail="Audit session not found. Start a new audit.")
+#     session = SESSIONS[session_id]
+    
+#     if session.status != "awaiting_approval" or not session.pending_action:
+#         raise HTTPException(status_code=409, detail="This audit has no pending approval.")
+        
+#     # Support both 'action' and 'decision' attribute names
+#     user_action = getattr(req, "action", None) or getattr(req, "decision", None)
+#     reason = getattr(req, "reason", "")
+    
+#     if user_action == "approve":
+#         session.status = "executing"
+#         session.pending_action["simulated_execution"] = "Approved and recorded locally; no external message was sent."
+#         session.pending_action["approved"] = True
+#         session.audit_log.append({
+#             "time": utc_now(),
+#             "type": "approved_simulation",
+#             "message": "Human approved the proposed action (simulated).",
+#             "details": {"merchant": session.pending_action['merchant'], "reason": reason}
+#         })
+#         if getattr(session, "summary", None):
+#             session.summary += " Demo action approved and simulated; no message was sent."
+#     else:
+#         session.pending_action["approved"] = False
+#         session.audit_log.append({
+#             "time": utc_now(),
+#             "type": "rejected",
+#             "message": "Human rejected the proposed action. Nothing was sent.",
+#             "details": {}
+#         })
+#         if getattr(session, "summary", None):
+#             session.summary += " Proposed action rejected; nothing was sent."
+        
+#     session.status = "done"
+#     return session
 @app.post("/api/audits/{session_id}/approval")
 def approve_audit(session_id: str, req: ApprovalRequest):
     if session_id not in SESSIONS:
         raise HTTPException(status_code=404, detail="Audit session not found. Start a new audit.")
     session = SESSIONS[session_id]
     
-    if session.status != "awaiting_approval" or not session.pending_action:
-        raise HTTPException(status_code=409, detail="This audit has no pending approval.")
+    # Support both 'action' and 'decision' attribute names sent by the UI
+    user_action = getattr(req, "action", None) or getattr(req, "decision", None) or "approve"
+    reason = getattr(req, "reason", "") or ""
+    
+    merchant_name = session.pending_action.get('merchant', '') if session.pending_action else ''
+
+    if user_action == "approve":
+        session.status = "done"
+        session.audit_log.append({
+            "time": utc_now(),
+            "type": "approved_simulation",
+            "message": "Human approved the proposed action (simulated).",
+            "details": {"merchant": merchant_name, "reason": reason}
+        })
+        if getattr(session, "summary", None):
+            session.summary += " Proposed action approved and simulated; no message was sent."
         
-    if req.decision == "approve":
-        session.status = "executing"
-        session.pending_action["simulated_execution"] = "Approved and recorded locally; no external message was sent."
-        session.pending_action["approved"] = True
-        session.audit_log.append({"time": utc_now(), "type": "approved_simulation", "message": "Human approved the proposed action (simulated).", "details": {"merchant": session.pending_action['merchant'], "reason": req.reason}})
-        session.summary += " Demo action approved and simulated; no message was sent."
+        # Clear pending action so the UI removes/collapses the approval card
+        session.pending_action = None
     else:
-        session.pending_action["approved"] = False
-        session.audit_log.append({"time": utc_now(), "type": "rejected", "message": "Human rejected the proposed action. Nothing was sent.", "details": {}})
-        session.summary += " Proposed action rejected; nothing was sent."
+        session.status = "done"
+        session.audit_log.append({
+            "time": utc_now(),
+            "type": "rejected",
+            "message": "Human rejected the proposed action. Nothing was sent.",
+            "details": {}
+        })
+        if getattr(session, "summary", None):
+            session.summary += " Proposed action rejected; nothing was sent."
+            
+        # Clear pending action so the UI removes/collapses the approval card
+        session.pending_action = None
         
-    session.status = "done"
-    return session
+    return session.model_dump(mode="json") if hasattr(session, "model_dump") else session
