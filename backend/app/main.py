@@ -212,44 +212,6 @@ def get_audit(session_id: str):
         raise HTTPException(status_code=404, detail="Audit session not found.")
     return SESSIONS[session_id]
 
-# @app.post("/api/audits/{session_id}/approval")
-# def approve_audit(session_id: str, req: ApprovalRequest):
-#     if session_id not in SESSIONS:
-#         raise HTTPException(status_code=404, detail="Audit session not found. Start a new audit.")
-#     session = SESSIONS[session_id]
-    
-#     if session.status != "awaiting_approval" or not session.pending_action:
-#         raise HTTPException(status_code=409, detail="This audit has no pending approval.")
-        
-#     # Support both 'action' and 'decision' attribute names
-#     user_action = getattr(req, "action", None) or getattr(req, "decision", None)
-#     reason = getattr(req, "reason", "")
-    
-#     if user_action == "approve":
-#         session.status = "executing"
-#         session.pending_action["simulated_execution"] = "Approved and recorded locally; no external message was sent."
-#         session.pending_action["approved"] = True
-#         session.audit_log.append({
-#             "time": utc_now(),
-#             "type": "approved_simulation",
-#             "message": "Human approved the proposed action (simulated).",
-#             "details": {"merchant": session.pending_action['merchant'], "reason": reason}
-#         })
-#         if getattr(session, "summary", None):
-#             session.summary += " Demo action approved and simulated; no message was sent."
-#     else:
-#         session.pending_action["approved"] = False
-#         session.audit_log.append({
-#             "time": utc_now(),
-#             "type": "rejected",
-#             "message": "Human rejected the proposed action. Nothing was sent.",
-#             "details": {}
-#         })
-#         if getattr(session, "summary", None):
-#             session.summary += " Proposed action rejected; nothing was sent."
-        
-#     session.status = "done"
-#     return session
 @app.post("/api/audits/{session_id}/approval")
 def approve_audit(session_id: str, req: ApprovalRequest):
     if session_id not in SESSIONS:
@@ -289,4 +251,4 @@ def approve_audit(session_id: str, req: ApprovalRequest):
         # Clear pending action so the UI removes/collapses the approval card
         session.pending_action = None
         
-    return session.model_dump(mode="json") if hasattr(session, "model_dump") else session
+    return session.model_dump(mode="json") if hasattr(session, "model_dump") else session 
