@@ -1,4 +1,4 @@
-# FInancial-Intelligence-Agent
+# Financial-Intelligence-Agent
 # Finance Intelligence Agent (Finwise)
 
 A classroom-friendly full-stack web application (React + Vite, Python FastAPI) demonstrating GenAI extraction and an autonomous AI agent audit workflow over personal finance data. 
